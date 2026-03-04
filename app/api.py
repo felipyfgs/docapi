@@ -12,18 +12,83 @@ from .consultar import (
     consultar_apenas_optantes,
 )
 
-app = FastAPI(title="Simplix", description="API de consulta MEI/CNPJ")
+app = FastAPI(
+    title="Simplix DocAPI",
+    version="1.0.0",
+    description="""
+## API de Consulta CNPJ / MEI
+
+Consulta automatizada de dados cadastrais, declaracoes DASN-SIMEI e situacao
+no Simples Nacional direto dos portais da **Receita Federal do Brasil**.
+
+### Endpoints disponiveis
+
+| Endpoint | Descricao |
+|---|---|
+| `POST /consultar` | Consulta completa (cadastro + DASN + optantes) |
+| `POST /consultar/cnpj` | Apenas dados cadastrais do CNPJ |
+| `POST /consultar/dasn` | Apenas declaracoes DASN-SIMEI |
+| `POST /consultar/optantes` | Apenas situacao no Simples/SIMEI |
+
+### Formato do CNPJ
+Aceita com ou sem mascara: `45.726.608/0001-36` ou `45726608000136`
+
+### Tempo de resposta
+As consultas acessam portais externos da Receita Federal em tempo real e podem
+levar de **15 a 60 segundos** dependendo da carga dos servidores governamentais.
+A consulta completa (`/consultar`) executa os 3 modulos sequencialmente.
+
+### Codigos de erro
+| Codigo | Significado |
+|---|---|
+| 400 | CNPJ invalido |
+| 502 | Falha no portal da Receita (captcha, indisponibilidade) |
+| 504 | Timeout no portal externo |
+| 500 | Erro interno inesperado |
+""",
+    openapi_tags=[
+        {
+            "name": "Consulta Completa",
+            "description": "Retorna cadastro, DASN e situacao no Simples/SIMEI em uma unica chamada.",
+        },
+        {
+            "name": "Consulta Individual",
+            "description": "Consulta cada modulo separadamente para maior flexibilidade e menor tempo de resposta.",
+        },
+        {
+            "name": "Sistema",
+            "description": "Endpoints de monitoramento e saude da aplicacao.",
+        },
+    ],
+)
 
 
 class ErrorResponse(BaseModel):
+    """Resposta padrao de erro."""
     detail: str
 
 
 _ERROR_RESPONSES = {
-    400: {"model": ErrorResponse, "description": "CNPJ invalido"},
-    500: {"model": ErrorResponse, "description": "Erro interno"},
-    502: {"model": ErrorResponse, "description": "Falha no servico externo (Receita/SEFAZ)"},
-    504: {"model": ErrorResponse, "description": "Timeout no servico externo"},
+    400: {
+        "model": ErrorResponse,
+        "description": "CNPJ invalido",
+        "content": {"application/json": {"example": {"detail": "CNPJ invalido"}}},
+    },
+    500: {
+        "model": ErrorResponse,
+        "description": "Erro interno",
+        "content": {"application/json": {"example": {"detail": "Erro inesperado no processamento"}}},
+    },
+    502: {
+        "model": ErrorResponse,
+        "description": "Falha no servico externo (Receita Federal)",
+        "content": {"application/json": {"example": {"detail": "CNPJ - Captcha solver falhou: NoPeCHA timeout (180s)"}}},
+    },
+    504: {
+        "model": ErrorResponse,
+        "description": "Timeout no servico externo",
+        "content": {"application/json": {"example": {"detail": "Timeout no servico externo: page.wait_for_url: Timeout 30000ms exceeded."}}},
+    },
 }
 
 
@@ -42,26 +107,71 @@ async def _safe_call(fn, *args):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/consultar", response_model=ConsultaResponse, responses=_ERROR_RESPONSES)
+@app.post(
+    "/consultar",
+    response_model=ConsultaResponse,
+    responses=_ERROR_RESPONSES,
+    tags=["Consulta Completa"],
+    summary="Consulta completa MEI/CNPJ",
+    description="Retorna dados cadastrais, declaracoes DASN-SIMEI e situacao no Simples Nacional/SIMEI "
+                "em uma unica chamada. Executa os 3 modulos sequencialmente.",
+    response_description="Dados completos do CNPJ consultado",
+)
 async def consultar(req: ConsultaRequest):
     return await _safe_call(consultar_mei, req.cnpj)
 
 
-@app.post("/consultar/cnpj", response_model=CadastroResponse, responses=_ERROR_RESPONSES)
+@app.post(
+    "/consultar/cnpj",
+    response_model=CadastroResponse,
+    responses=_ERROR_RESPONSES,
+    tags=["Consulta Individual"],
+    summary="Consultar dados cadastrais",
+    description="Retorna dados cadastrais extraidos do Comprovante de Inscricao e Situacao Cadastral "
+                "da Receita Federal, incluindo razao social, endereco, CNAEs, situacao cadastral, "
+                "capital social e quadro de socios.",
+    response_description="Dados cadastrais do CNPJ",
+)
 async def consultar_cnpj(req: ConsultaRequest):
     return await _safe_call(consultar_apenas_cnpj, req.cnpj)
 
 
-@app.post("/consultar/dasn", response_model=DasnResponse, responses=_ERROR_RESPONSES)
+@app.post(
+    "/consultar/dasn",
+    response_model=DasnResponse,
+    responses=_ERROR_RESPONSES,
+    tags=["Consulta Individual"],
+    summary="Consultar declaracoes DASN-SIMEI",
+    description="Retorna a lista de declaracoes anuais DASN-SIMEI do contribuinte, "
+                "incluindo status (apresentada, pendente), ano-calendario, "
+                "data de apresentacao e situacao de baixa.",
+    response_description="Declaracoes DASN-SIMEI do contribuinte",
+)
 async def consultar_dasn(req: ConsultaRequest):
     return await _safe_call(consultar_apenas_dasn, req.cnpj)
 
 
-@app.post("/consultar/optantes", response_model=OptantesResponse, responses=_ERROR_RESPONSES)
+@app.post(
+    "/consultar/optantes",
+    response_model=OptantesResponse,
+    responses=_ERROR_RESPONSES,
+    tags=["Consulta Individual"],
+    summary="Consultar situacao Simples Nacional / SIMEI",
+    description="Retorna a situacao atual e historico de periodos anteriores no "
+                "Simples Nacional e SIMEI, incluindo datas de opcao/enquadramento "
+                "e eventuais eventos futuros programados.",
+    response_description="Situacao no Simples Nacional e SIMEI",
+)
 async def consultar_optantes(req: ConsultaRequest):
     return await _safe_call(consultar_apenas_optantes, req.cnpj)
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["Sistema"],
+    summary="Health check",
+    description="Verifica se a aplicacao esta rodando e respondendo.",
+    response_description="Status da aplicacao",
+)
 async def health():
     return {"status": "ok"}
