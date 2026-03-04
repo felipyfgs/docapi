@@ -40,4 +40,4 @@ COPY app/ app/
 COPY main.py .
 
 EXPOSE 8000
-CMD ["xvfb-run", "--auto-servernum", "python", "main.py", "--server"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp & sleep 1 && DISPLAY=:99 python main.py --server"]
