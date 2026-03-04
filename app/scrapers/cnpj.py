@@ -114,37 +114,60 @@ _JS_EXTRAI_QSA = """() => {
 }"""
 
 
+_JS_INJETAR_HCAPTCHA = """(token) => {
+    document.querySelectorAll(
+        '[name="h-captcha-response"], [name="g-recaptcha-response"]'
+    ).forEach(el => { el.value = token; });
+
+    if (window.hcaptcha) {
+        try {
+            const ids = window.hcaptcha.getAllIds ? window.hcaptcha.getAllIds() : [];
+            for (const id of ids) {
+                if (!window.hcaptcha.getResponse(id)) {
+                    if (window.hcaptcha.setResponse) window.hcaptcha.setResponse(id, token);
+                }
+            }
+        } catch (_) {}
+    }
+
+    const iframe = document.querySelector('iframe[data-hcaptcha-widget-id]');
+    if (iframe) iframe.setAttribute('data-hcaptcha-response', token);
+}"""
+
+
 async def consultar_cnpj(page, cnpj_limpo: str, max_retries: int = 3) -> dict:
     page_url = f"{CNPJ_URL}?cnpj={cnpj_limpo}"
 
     for attempt in range(max_retries):
         await page.goto(page_url, wait_until="domcontentloaded")
+        await page.wait_for_selector('iframe[title*="Widget contendo"]', timeout=10000)
 
         captcha_resolved = False
-        try:
-            captcha_frame = page.frame_locator('iframe[title*="Widget contendo"]')
-            checkbox = captcha_frame.locator("#checkbox")
-            await checkbox.wait_for(timeout=5000)
-            await checkbox.click()
-            checked = captcha_frame.locator('[aria-checked="true"]')
-            await checked.wait_for(timeout=5000)
-            captcha_resolved = True
-        except Exception:
-            pass
 
-        if not captcha_resolved and NOPECHA_API_KEY:
+        # 1) NoPeCHA primeiro (mais confiavel que click)
+        if NOPECHA_API_KEY and not captcha_resolved:
             try:
                 token = await asyncio.to_thread(
                     resolver_hcaptcha, page_url, CNPJ_HCAPTCHA_SITEKEY
                 )
-                await page.evaluate("""(token) => {
-                    document.querySelector('[name="h-captcha-response"]').value = token;
-                    document.querySelector('[name="g-recaptcha-response"]').value = token;
-                }""", token)
+                await page.evaluate(_JS_INJETAR_HCAPTCHA, token)
                 captcha_resolved = True
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise RuntimeError(f"CNPJ - Captcha solver falhou: {e}")
+
+        # 2) Fallback: click no checkbox (funciona se hCaptcha nao pedir desafio)
+        if not captcha_resolved:
+            try:
+                captcha_frame = page.frame_locator('iframe[title*="Widget contendo"]')
+                checkbox = captcha_frame.locator("#checkbox")
+                await checkbox.wait_for(timeout=5000)
+                await checkbox.click()
+                checked = captcha_frame.locator('[aria-checked="true"]')
+                await checked.wait_for(timeout=8000)
+                captcha_resolved = True
+            except Exception:
+                pass
 
         if not captcha_resolved:
             if attempt < max_retries - 1:
